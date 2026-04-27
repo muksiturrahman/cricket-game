@@ -101,8 +101,14 @@ class _RunButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final phase = context.watch<GameStateNotifier>().phase;
+    final notifier = context.watch<GameStateNotifier>();
+    final phase = notifier.phase;
+    final innings = notifier.innings;
     if (phase != GamePhase.playing) return const SizedBox.shrink();
+    // Hide during the AI's chase — only the player needs the RUN button,
+    // and showing it during the AI's innings invites confused taps that
+    // would have piled runs on the AI's score.
+    if (innings != Innings.playerBats) return const SizedBox.shrink();
     return Positioned(
       right: 18,
       bottom: 26,

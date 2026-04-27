@@ -92,6 +92,16 @@ const double kBallSettleSec = 0.4;
 const double kBoundaryWidthRatio = 0.90;
 /// Boundary ellipse height as a fraction of screen height.
 const double kBoundaryHeightRatio = 0.80;
+/// Ellipse-distance ratio above which a fielded ball counts as a *boundary
+/// save* — the fielder reached the rope and stopped what would otherwise
+/// have been a 4. Values: 1.0 = ON the rope, 0.0 = at the centre. ~0.80 is
+/// "the last 10% before the rope".
+const double kBoundarySaveThreshold = 0.80;
+/// Runs awarded on a boundary save — typically the batsmen scrambled 2 by
+/// the time the fielder slid in. We give max(running runs, this).
+const int kBoundarySaveRuns = 2;
+/// Visual dive duration on a save (s) — fielder briefly stretches.
+const double kFielderDiveSec = 0.5;
 
 // ── Inner ring (30-yard circle) ──────────────────────────────────────────────
 const double kInnerRingWidthRatio = 0.55;

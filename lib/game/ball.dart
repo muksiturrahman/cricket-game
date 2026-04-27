@@ -44,6 +44,11 @@ class Ball extends CircleComponent with HasGameReference, CollisionCallbacks {
   double _firstBounceRestitution = kBounceRestitution;
   bool _isFirstBounce = false;
 
+  /// Pitch-type multiplier applied to all bounce restitutions (first and
+  /// later). 1.0 = flat. > 1 for green pitches (extra bounce), < 1 for
+  /// turning pitches (low bounce). Written by `CricketGame._applySettings`.
+  double bounceMultiplier = 1.0;
+
   /// Past world-positions used to render the motion trail. Newest first.
   final List<Vector2> _trail = [];
 
@@ -194,9 +199,10 @@ class Ball extends CircleComponent with HasGameReference, CollisionCallbacks {
     if (position.y >= pitchY && velocity.y > 0) {
       position.y = pitchY;
       final wasFastBounce = velocity.y.abs() > 80;
-      final restitution = (_isFirstBounce && !wasHitByBat)
+      final baseRestitution = (_isFirstBounce && !wasHitByBat)
           ? _firstBounceRestitution
           : kBounceRestitution;
+      final restitution = baseRestitution * bounceMultiplier;
       velocity.y = -velocity.y * restitution;
       if (velocity.y.abs() < 20) velocity.y = 0;
       _isFirstBounce = false;

@@ -95,3 +95,11 @@ class ShotQualityCalled extends DeliveryEvent {
   final ShotQuality quality;
   const ShotQualityCalled(this.quality);
 }
+
+/// Fielder slid in at the rope and stopped what would have been a 4.
+/// HUD-only: flashes a "SAVED!" banner; CricketGame fires it before
+/// `_finishDelivery` so the player can see the dive happen.
+class BoundarySaved extends DeliveryEvent {
+  final FieldPosition by;
+  const BoundarySaved(this.by);
+}

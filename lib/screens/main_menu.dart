@@ -37,6 +37,8 @@ class _MainMenuOverlayState extends State<MainMenuOverlay>
   MatchFormat _format = MatchFormat.t5;
   Difficulty _difficulty = Difficulty.normal;
   bool _chase = false;
+  PitchType _pitch = PitchType.flat;
+  FieldPreset _field = FieldPreset.defensive;
   late final AnimationController _entry;
   late final AnimationController _badgeSpin;
 
@@ -151,6 +153,34 @@ class _MainMenuOverlayState extends State<MainMenuOverlay>
                                 : 'Single innings — score as much as you can',
                             style: AppText.body.copyWith(fontSize: 12),
                           ),
+                          const SizedBox(height: 18),
+                          _SectionLabel(text: 'Pitch'),
+                          const SizedBox(height: 8),
+                          _PillRow<PitchType>(
+                            values: PitchType.values,
+                            selected: _pitch,
+                            labelOf: (p) => p.label,
+                            onSelected: (p) => setState(() => _pitch = p),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            _pitch.blurb,
+                            style: AppText.body.copyWith(fontSize: 12),
+                          ),
+                          const SizedBox(height: 18),
+                          _SectionLabel(text: 'Field'),
+                          const SizedBox(height: 8),
+                          _PillRow<FieldPreset>(
+                            values: FieldPreset.values,
+                            selected: _field,
+                            labelOf: (f) => f.label,
+                            onSelected: (f) => setState(() => _field = f),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            _field.blurb,
+                            style: AppText.body.copyWith(fontSize: 12),
+                          ),
                         ],
                       ),
                     ),
@@ -164,6 +194,8 @@ class _MainMenuOverlayState extends State<MainMenuOverlay>
                         format: _format,
                         difficulty: _difficulty,
                         chase: _chase,
+                        pitchType: _pitch,
+                        fieldPreset: _field,
                       )),
                     ),
                     const SizedBox(height: 10),

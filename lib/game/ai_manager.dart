@@ -126,6 +126,10 @@ class AIManager {
   double minSpeed = kMinBallSpeed;
   double maxSpeed = kMaxBallSpeed;
 
+  /// Pitch-type multiplier on the spinner's bounce deflection — > 1 for
+  /// turning pitches, < 1 for green / fast pitches. 1.0 = flat surface.
+  double pitchDeflectionMul = 1.0;
+
   /// Probability of each illegal delivery. Tuned for "happens but doesn't
   /// dominate" — about one wide every 12 balls, one no-ball every 25.
   static const double _wideProb = 0.08;
@@ -171,13 +175,14 @@ class AIManager {
       swing = (swing.abs() + 6) * side; // bias swing to the same side
     }
 
-    // Spinner-only: pick a turn direction at delivery time.
+    // Spinner-only: pick a turn direction at delivery time. Pitch type
+    // scales the magnitude — turning pitches grip more, green pitches less.
     var deflection = 0.0;
     if (kind == BowlerKind.spinner) {
       final side = _rng.nextBool() ? 1.0 : -1.0;
       // Vary the amount so each ball turns differently.
       final amt = kind.deflection * (0.6 + _rng.nextDouble() * 0.7);
-      deflection = amt * side;
+      deflection = amt * side * pitchDeflectionMul;
     }
 
     return BowlConfig(

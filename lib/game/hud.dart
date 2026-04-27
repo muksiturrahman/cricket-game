@@ -163,6 +163,9 @@ class GameHud extends PositionComponent with HasGameReference {
           _showBanner('MISTIMED', const Color(0xFFFFCC00));
         }
 
+      case BoundarySaved():
+        _showBanner('SAVED!', kPalette.primary);
+
       case BallFielded() || BallDead():
         _runPrompt = '';
 

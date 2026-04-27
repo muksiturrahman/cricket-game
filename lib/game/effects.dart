@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../utils/constants.dart';
 import '../utils/theme.dart';
+import 'cricket_game.dart';
 
 /// ───────────────────────────────────────────────────────────────────────────
 /// Lightweight effect components — each removes itself after its lifetime.
@@ -253,6 +254,128 @@ class _Particle {
     required this.radius,
     required this.color,
   });
+}
+
+/// Tiny live radar of the field — drawn in the top-right corner. Shows the
+/// boundary ellipse, the pitch strip, every fielder/keeper, the ball, and
+/// both batsmen as coloured dots. Reads positions live from `CricketGame`
+/// each frame; no event subscription, no per-frame allocation.
+class MiniMap extends Component with HasGameReference {
+  /// Width of the rendered map (px). Height scales by aspect ratio.
+  static const double _width = 130;
+  static const double _padding = 12;
+
+  MiniMap() {
+    priority = 10; // same band as HUD
+  }
+
+  @override
+  void render(Canvas canvas) {
+    final g = game;
+    if (g is! CricketGame) return;
+    final gw = g.size.x;
+    final gh = g.size.y;
+    final scale = _width / gw;
+    final h = gh * scale;
+
+    final left = gw - _width - _padding;
+    final top = _padding;
+    final mapRect = Rect.fromLTWH(left, top, _width, h);
+
+    // Backing pill
+    final back = RRect.fromRectAndRadius(
+      mapRect.inflate(4),
+      const Radius.circular(8),
+    );
+    canvas.drawRRect(
+      back,
+      Paint()..color = const Color(0xCC0E1A0F),
+    );
+    canvas.drawRRect(
+      back,
+      Paint()
+        ..color = kPalette.primary.withValues(alpha: 0.4)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2,
+    );
+
+    // Boundary rope
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(left + _width / 2, top + h / 2),
+        width: _width * 0.86, // matches kBoundaryWidthRatio at scale
+        height: h * 0.78,
+      ),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.5)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+
+    // Pitch strip — narrow brown rect
+    final pitchW = gw * 0.13 * scale;
+    final pitchL = left + (_width - pitchW) / 2;
+    canvas.drawRect(
+      Rect.fromLTWH(pitchL, top + h * 0.18, pitchW, h * 0.65),
+      Paint()..color = const Color(0x803A2410),
+    );
+
+    // Helper: world position → mini-map coords
+    Offset px(Vector2 worldCentre) => Offset(
+          left + worldCentre.x * scale,
+          top + worldCentre.y * scale,
+        );
+
+    // Fielders + keeper
+    for (final f in g.fielders.values) {
+      final c = px(f.centre);
+      final color = f.fieldPosition == FieldPosition.keeper
+          ? const Color(0xFFFFD54F)
+          : kColorFielderKit;
+      canvas.drawCircle(c, 2.5, Paint()..color = color);
+      canvas.drawCircle(
+        c,
+        2.5,
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.6)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.6,
+      );
+    }
+
+    // Batsmen
+    for (final b in [g.striker, g.nonStriker]) {
+      final c = Offset(
+        left + (b.position.x + b.size.x / 2) * scale,
+        top + (b.position.y + b.size.y / 2) * scale,
+      );
+      canvas.drawCircle(c, 2.6, Paint()..color = kColorBatsmanKit);
+    }
+
+    // Bowler
+    final b = g.bowler;
+    canvas.drawCircle(
+      Offset(
+        left + (b.position.x + b.size.x / 2) * scale,
+        top + (b.position.y + b.size.y / 2) * scale,
+      ),
+      2.4,
+      Paint()..color = Colors.white,
+    );
+
+    // Ball — red dot, shown only when in play
+    if (g.ball.ballState != BallState.dead &&
+        g.ball.ballState != BallState.waiting) {
+      canvas.drawCircle(
+        Offset(
+          left + (g.ball.position.x + g.ball.size.x / 2) * scale,
+          top + (g.ball.position.y + g.ball.size.y / 2) * scale,
+        ),
+        2.0,
+        Paint()..color = kColorBall,
+      );
+    }
+  }
 }
 
 /// Slow-motion replay overlay — spawned by `CricketGame` on wickets / sixes.

@@ -17,24 +17,49 @@ class Bowler extends PositionComponent with HasGameReference {
   double _runUpTimer = 0;
   BowlConfig? _config;
 
-  /// Cached "home" position — where bowler stands between deliveries. Run-up
-  /// progresses forward toward the crease, then snaps back to home.
-  Vector2 _homePos = Vector2.zero();
+  /// Where the bowler stands at the moment of release — just behind the
+  /// popping crease. Cached in `onLoad`.
+  Vector2 _crease = Vector2.zero();
+
+  /// Run-up start point — set in `prepareBowl` from the bowler kind. Pacer
+  /// starts off-screen above; spinner only takes a few strides.
+  Vector2 _runUpStart = Vector2.zero();
 
   void Function(BowlConfig)? onRelease;
+
+  /// Public accessor used by `Bowler.render` and external animations to
+  /// scale stride amplitude / frequency by archetype.
+  BowlerKind? get currentKind => _config?.kind;
 
   @override
   Future<void> onLoad() async {
     size = Vector2(48, 80);
-    position = Vector2(
+    _crease = Vector2(
       game.size.x / 2 - size.x / 2,
       game.size.y * 0.22,
     );
-    _homePos = position.clone();
+    _runUpStart = _crease.clone();
+    position = _crease.clone();
   }
+
+  /// Per-kind run-up start fraction of screen height. Pacers get a long
+  /// approach (off-screen above); spinners only a few strides.
+  static double _startYRatioFor(BowlerKind kind) => switch (kind) {
+        BowlerKind.pacer => -0.05,
+        BowlerKind.medium => 0.02,
+        BowlerKind.swing => 0.05,
+        BowlerKind.spinner => 0.13,
+      };
 
   void prepareBowl(BowlConfig config) {
     _config = config;
+    _runUpStart = Vector2(
+      _crease.x,
+      game.size.y * _startYRatioFor(config.kind),
+    );
+    // Teleport to the run-up mark — the settling delay between deliveries
+    // gives the player time to register the bowler's new starting position.
+    position = _runUpStart.clone();
     _runningUp = true;
     _runUpTimer = 0;
   }
@@ -43,33 +68,28 @@ class Bowler extends PositionComponent with HasGameReference {
     _runningUp = false;
     _runUpTimer = 0;
     _config = null;
-    if (_homePos != Vector2.zero()) position = _homePos.clone();
+    if (_crease != Vector2.zero()) position = _crease.clone();
   }
 
   @override
   void update(double dt) {
-    if (!_runningUp) {
-      // Lerp gently back to home between deliveries.
-      final delta = _homePos - position;
-      if (delta.length > 0.5) {
-        position += delta * (dt * 6).clamp(0, 1);
-      }
-      return;
-    }
+    if (!_runningUp) return;
     _runUpTimer += dt;
     final t = (_runUpTimer / runUpSec).clamp(0.0, 1.0);
-    // Walk forward toward the bowling crease — but cap the stride so the
-    // bowler never crosses past their popping crease. Bowler.position.y
-    // starts at ~0.22h and the bowler-end crease is at ~0.28h; the visible
-    // body already extends most of that 0.06h, so the walk only needs a
-    // few-pixel forward shuffle. We cap at 4% of screen height.
-    final maxForward = game.size.y * 0.04;
-    final forward = math.pow(t, 1.4) * maxForward;
-    position = Vector2(_homePos.x, _homePos.y + forward.toDouble());
+    // Smoothstep — start slow, accelerate, decelerate at release. Distance
+    // from start to crease is set by the bowler kind, so pacers cover more
+    // ground in the same time = visibly faster sprint.
+    final eased = t * t * (3 - 2 * t);
+    position = Vector2(
+      _runUpStart.x,
+      _runUpStart.y + (_crease.y - _runUpStart.y) * eased,
+    );
     if (_runUpTimer >= runUpSec && _config != null) {
       _runningUp = false;
       onRelease?.call(_config!);
       _config = null;
+      // Stay at the crease after release — next prepareBowl will teleport
+      // to the new run-up mark.
     }
   }
 
@@ -77,8 +97,27 @@ class Bowler extends PositionComponent with HasGameReference {
   void render(Canvas canvas) {
     final centerX = size.x / 2;
     final t = _runningUp ? (_runUpTimer / runUpSec).clamp(0.0, 1.0) : 0.0;
-    // Bob: small vertical hop during run-up
-    final bob = _runningUp ? math.sin(_runUpTimer * 18) * 1.6 : 0.0;
+    // Stride amplitude / frequency vary by archetype — pacer takes big fast
+    // strides, spinner an easy walking pace.
+    final kind = _config?.kind;
+    final strideAmp = switch (kind) {
+      BowlerKind.pacer => 8.0,
+      BowlerKind.medium => 5.5,
+      BowlerKind.swing => 5.0,
+      BowlerKind.spinner => 3.0,
+      _ => 4.5,
+    };
+    final strideFreq = switch (kind) {
+      BowlerKind.pacer => 18.0,
+      BowlerKind.medium => 14.0,
+      BowlerKind.swing => 13.0,
+      BowlerKind.spinner => 9.0,
+      _ => 14.0,
+    };
+    // Bob: small vertical hop during run-up; bigger for fast types.
+    final bob = _runningUp
+        ? math.sin(_runUpTimer * (strideFreq + 2)) * (1.0 + strideAmp * 0.12)
+        : 0.0;
 
     canvas.save();
     canvas.translate(0, bob);
@@ -90,9 +129,12 @@ class Bowler extends PositionComponent with HasGameReference {
       Paint()..color = Colors.black.withValues(alpha: 0.32),
     );
 
-    // Legs (dark trousers)
+    // Legs (dark trousers) — alternating stride: when one leg is forward,
+    // the other is back. `stridePhase` swings -1..+1 over each step.
     final trousers = Paint()..color = const Color(0xFF1F2A37);
-    final legSpread = _runningUp ? 4.0 + math.sin(_runUpTimer * 14) * 4.0 : 0.0;
+    final stridePhase =
+        _runningUp ? math.sin(_runUpTimer * strideFreq) : 0.0;
+    final legSpread = stridePhase.abs() * strideAmp;
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromLTWH(centerX - 12 - legSpread, 36, 11, 28),

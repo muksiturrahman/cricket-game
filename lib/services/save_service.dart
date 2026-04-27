@@ -15,6 +15,10 @@ class SavedMatch {
   final MatchFormat format;
   final Difficulty difficulty;
   final bool chase;
+  /// Pitch preset chosen at start. Defaults to flat for legacy snapshots.
+  final PitchType pitchType;
+  /// Captain's field placement chosen at start. Defaults to defensive.
+  final FieldPreset fieldPreset;
 
   /// Live scoreboard at save time.
   final int runs;
@@ -41,6 +45,8 @@ class SavedMatch {
     required this.format,
     required this.difficulty,
     required this.chase,
+    this.pitchType = PitchType.flat,
+    this.fieldPreset = FieldPreset.defensive,
     required this.runs,
     required this.wickets,
     required this.ballsBowled,
@@ -60,6 +66,8 @@ class SavedMatch {
         'format': format.name,
         'difficulty': difficulty.name,
         'chase': chase,
+        'pitchType': pitchType.name,
+        'fieldPreset': fieldPreset.name,
         'runs': runs,
         'wickets': wickets,
         'ballsBowled': ballsBowled,
@@ -84,6 +92,16 @@ class SavedMatch {
         format: MatchFormat.values.byName(j['format'] as String),
         difficulty: Difficulty.values.byName(j['difficulty'] as String),
         chase: (j['chase'] as bool?) ?? false,
+        pitchType: PitchType.values
+            .firstWhere(
+              (p) => p.name == (j['pitchType'] as String?),
+              orElse: () => PitchType.flat,
+            ),
+        fieldPreset: FieldPreset.values
+            .firstWhere(
+              (f) => f.name == (j['fieldPreset'] as String?),
+              orElse: () => FieldPreset.defensive,
+            ),
         runs: (j['runs'] as int?) ?? 0,
         wickets: (j['wickets'] as int?) ?? 0,
         ballsBowled: (j['ballsBowled'] as int?) ?? 0,

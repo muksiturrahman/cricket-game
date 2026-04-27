@@ -118,9 +118,15 @@ class CricketGame extends FlameGame
     runningActive.value = active;
   }
 
-  /// Public entry-point for the on-screen RUN button (mobile). Keyboard goes
-  /// through `_takeRun` directly.
-  void takeRun() => _takeRun();
+  /// Public entry-point for the on-screen RUN button (mobile) AND the
+  /// keyboard R / Enter binding. Gated on `playerBats` so the player can't
+  /// accidentally pile runs on the AI's score during the chase. (The AI's
+  /// running is driven by `_scheduleAiRuns`, which calls `_takeRun` directly
+  /// — bypassing this gate.)
+  void takeRun() {
+    if (innings != Innings.playerBats) return;
+    _takeRun();
+  }
 
   // Outcome of the in-progress delivery — finalized in _finishDelivery().
   int _outcomeRuns = 0;
@@ -229,6 +235,7 @@ class CricketGame extends FlameGame
 
     hud = GameHud(eventBus: eventBus);
     await add(hud);
+    await add(MiniMap());
   }
 
   // ── Single dispatcher for all delivery events ──────────────────────────────
@@ -383,10 +390,30 @@ class CricketGame extends FlameGame
         // Don't disable running yet — if we're about to throw at the stumps,
         // the batsman keeps sprinting and the resolver clears it.
         final fielder = fielders[by];
+        // Boundary save: fielder caught up to a 4-bound shot right at the
+        // rope. Award `kBoundarySaveRuns` if higher than the running tally
+        // and animate a dive.
+        final ballCentre = Vector2(
+          ball.position.x + ball.size.x / 2,
+          ball.position.y + ball.size.y / 2,
+        );
+        final saved = _isBoundarySave(ballCentre);
+        if (saved && fielder != null) {
+          fielder.dive();
+          eventBus.fire(BoundarySaved(by));
+          if (_runsThisBall < kBoundarySaveRuns) {
+            _runsThisBall = kBoundarySaveRuns;
+          }
+        }
         // Run-out scenario: batsman is mid-stride and at least one run has
         // been started. Fielder will physically rifle the ball at the stumps;
         // outcome (out vs safe) is decided when the ball arrives there.
-        if (fielder != null && striker.isRunning && _runsThisBall > 0) {
+        // Skip run-out attempts on boundary saves — the fielder is already
+        // sprawled at the rope, can't realistically throw at the stumps.
+        if (!saved &&
+            fielder != null &&
+            striker.isRunning &&
+            _runsThisBall > 0) {
           _startThrow(fielder);
           return;
         }
@@ -396,7 +423,7 @@ class CricketGame extends FlameGame
           _outcomeRuns = _runsThisBall;
           _runsThisBall = 0;
         }
-        fielder?.flashHighlight();
+        if (!saved) fielder?.flashHighlight();
         striker.resetIdle();
         nonStriker.resetIdle();
         _sendFieldersHome();
@@ -481,7 +508,23 @@ class CricketGame extends FlameGame
       case ShotQualityCalled():
         // HUD-only event; CricketGame fires it from BatContact.
         break;
+
+      case BoundarySaved():
+        // HUD-only event; CricketGame fires it from BallFielded.
+        break;
     }
+  }
+
+  /// True when [pos] is in the outermost band of the boundary ellipse —
+  /// any fielding here is treated as a *boundary save*: the fielder dove
+  /// to stop a 4 right at the rope.
+  bool _isBoundarySave(Vector2 pos) {
+    final dx = pos.x - size.x / 2;
+    final dy = pos.y - size.y / 2;
+    final hw = size.x * kBoundaryWidthRatio / 2;
+    final hh = size.y * kBoundaryHeightRatio / 2;
+    final ratio = (dx * dx) / (hw * hw) + (dy * dy) / (hh * hh);
+    return ratio > kBoundarySaveThreshold;
   }
 
   // ── Run-out: physics-based throw ─────────────────────────────────────────
@@ -804,14 +847,25 @@ class CricketGame extends FlameGame
     scoreManager.maxWickets = s.maxWickets;
     aiManager.minSpeed = s.minBallSpeed;
     aiManager.maxSpeed = s.maxBallSpeed;
+    aiManager.pitchDeflectionMul = s.pitchDeflectionMul;
     bowler.runUpSec = s.runUpSec;
     striker.swingWindowSec = s.swingWindowSec;
     nonStriker.swingWindowSec = s.swingWindowSec;
+    // Pitch type scales bounce height for the whole match.
+    ball.bounceMultiplier = s.pitchBounceMul;
     // Tier 2: fielding scales with difficulty
     for (final f in fielders.values) {
       f.speed = kFielderSpeed * s.fielderSpeedMul;
       f.maxChaseDistance = s.fielderMaxChase;
     }
+    // Captain-set field — apply preset positions to all outfielders.
+    // The keeper's slot isn't in the preset map, so they keep their fixed
+    // position behind the stumps.
+    final placements = s.fieldPreset.placements;
+    placements.forEach((pos, ratio) {
+      final (rx, ry) = ratio;
+      fielders[pos]?.setHome(Vector2(rx, ry));
+    });
   }
 
   void togglePause() {
@@ -1026,8 +1080,13 @@ class CricketGame extends FlameGame
     _saveProgress();
     _pendingDeliveryScheduled = true;
     Future.delayed(const Duration(milliseconds: 1800), () {
-      if (phase == GamePhase.playing) _scheduleNextDelivery();
-      _pendingDeliveryScheduled = false;
+      // Only clear the pending flag if we actually scheduled. If we landed
+      // here while paused, leave it true so `togglePause`'s recovery branch
+      // re-kicks the next delivery on resume — otherwise the game stalls.
+      if (phase == GamePhase.playing) {
+        _scheduleNextDelivery();
+        _pendingDeliveryScheduled = false;
+      }
     });
   }
 
@@ -1041,6 +1100,8 @@ class CricketGame extends FlameGame
       format: settings.format,
       difficulty: settings.difficulty,
       chase: settings.chase,
+      pitchType: settings.pitchType,
+      fieldPreset: settings.fieldPreset,
       runs: scoreManager.runs,
       wickets: scoreManager.wickets,
       ballsBowled: scoreManager.ballsBowled,
@@ -1066,6 +1127,8 @@ class CricketGame extends FlameGame
       format: saved.format,
       difficulty: saved.difficulty,
       chase: saved.chase,
+      pitchType: saved.pitchType,
+      fieldPreset: saved.fieldPreset,
     ));
     overlays.remove('MainMenu');
     scoreManager.reset();
@@ -1102,6 +1165,19 @@ class CricketGame extends FlameGame
     _runsThisBall = 0;
     _setRunning(false);
     _inputEnabled = false;
+    // Reset the ball + batsmen back to start-of-delivery positions before
+    // kicking off the next bowl. Saves are taken between deliveries (after
+    // the ball ended the previous one) but `_saveProgress` runs *before*
+    // the inter-ball `ball.reset()` future, so on resume the ball would
+    // still be at its dead-state position. Without this the next launch
+    // would compute its trajectory from wherever the ball came to rest.
+    ball.reset();
+    striker.resetIdle();
+    nonStriker.resetIdle();
+    bowler.cancel();
+    _sendFieldersHome();
+    _throwInProgress = false;
+    _throwingFielder = null;
     phase = GamePhase.playing;
     stateNotifier.setPhase(GamePhase.playing);
     stateNotifier.setInnings(innings, target: target);
@@ -1169,13 +1245,16 @@ class CricketGame extends FlameGame
     Future.delayed(
       Duration(milliseconds: (kSettlingDelaySec * 1000).round()),
       () {
+        // Only clear the pending flag if we actually scheduled. If we're
+        // still paused when this fires, leave it true so togglePause can
+        // recover on resume.
         if (phase == GamePhase.playing) {
           ball.reset();
           striker.resetIdle();
           nonStriker.resetIdle();
           _scheduleNextDelivery();
+          _pendingDeliveryScheduled = false;
         }
-        _pendingDeliveryScheduled = false;
       },
     );
   }
@@ -1301,13 +1380,16 @@ class CricketGame extends FlameGame
     Future.delayed(
       Duration(milliseconds: (settleDelay * 1000).round()),
       () {
+        // Only clear the pending flag if we actually scheduled. Leaving it
+        // true while paused lets togglePause's recovery branch re-kick the
+        // next delivery on resume — otherwise the game stalls forever.
         if (phase == GamePhase.playing) {
           ball.reset();
           striker.resetIdle();
           nonStriker.resetIdle();
           _scheduleNextDelivery();
+          _pendingDeliveryScheduled = false;
         }
-        _pendingDeliveryScheduled = false;
       },
     );
   }
@@ -1413,10 +1495,12 @@ class CricketGame extends FlameGame
     }
 
     // R = take a run between wickets (only valid after bat contact, while the
-    // ball is still live and not yet caught/fielded/dead).
+    // ball is still live and not yet caught/fielded/dead). Gated on the
+    // player's own innings — during the AI's chase, R does nothing so the
+    // player can't add runs to the AI's score.
     if (event.logicalKey == LogicalKeyboardKey.keyR ||
         event.logicalKey == LogicalKeyboardKey.enter) {
-      if (_runningActive) {
+      if (_runningActive && innings == Innings.playerBats) {
         _takeRun();
         return KeyEventResult.handled;
       }

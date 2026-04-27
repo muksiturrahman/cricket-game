@@ -16,6 +16,11 @@ class Fielder extends PositionComponent with HasGameReference {
   bool _highlight = false;
   double _highlightTimer = 0;
 
+  /// Active when this fielder dove at the rope to save a boundary. Used by
+  /// `render` to draw a momentarily-stretched body / motion blur.
+  bool _diving = false;
+  double _diveTimer = 0;
+
   /// Cached top-left position of the fielder's home spot (computed in onLoad).
   Vector2 _homePos = Vector2.zero();
 
@@ -52,6 +57,15 @@ class Fielder extends PositionComponent with HasGameReference {
     _highlightTimer = 0;
   }
 
+  /// Trigger the boundary-save dive animation. Renders a stretched body +
+  /// motion-blur trail for `kFielderDiveSec`.
+  void dive() {
+    _diving = true;
+    _diveTimer = 0;
+    _highlight = true;
+    _highlightTimer = 0;
+  }
+
   /// Chase a ball whose centre is at [ballCentre]. The fielder moves toward
   /// the ball so its own centre converges with the ball's.
   void chaseTo(Vector2 ballCentre) {
@@ -63,6 +77,21 @@ class Fielder extends PositionComponent with HasGameReference {
     _target = null;
   }
 
+  /// Reposition this fielder's home spot — used by the captain-set field
+  /// preset. Snaps the fielder to the new home if they're not currently
+  /// chasing; otherwise the lerp-back-home logic will pull them there
+  /// once the chase target clears.
+  void setHome(Vector2 anchorRatio) {
+    final r = kFielderCatchRadius;
+    _homePos = Vector2(
+      game.size.x * anchorRatio.x - r,
+      game.size.y * anchorRatio.y - r,
+    );
+    if (_target == null) {
+      position = _homePos.clone();
+    }
+  }
+
   @override
   void update(double dt) {
     if (_highlight) {
@@ -70,6 +99,13 @@ class Fielder extends PositionComponent with HasGameReference {
       if (_highlightTimer >= kFielderHighlightSec) {
         _highlight = false;
         _highlightTimer = 0;
+      }
+    }
+    if (_diving) {
+      _diveTimer += dt;
+      if (_diveTimer >= kFielderDiveSec) {
+        _diving = false;
+        _diveTimer = 0;
       }
     }
 
@@ -127,6 +163,43 @@ class Fielder extends PositionComponent with HasGameReference {
           ..color = kPalette.primary.withValues(alpha: (1 - t) * 0.35)
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
       );
+    }
+
+    // Boundary-save dive — flatten the body (taller-than-wide oval) and
+    // paint a motion-blur smear behind. Briefly stretches outward as the
+    // fielder slides at the rope.
+    if (_diving) {
+      final dt = (_diveTimer / kFielderDiveSec).clamp(0.0, 1.0);
+      final stretch = 1.0 + (1 - (dt - 0.5).abs() * 2) * 0.55; // peaks mid-anim
+      // Smear trail behind the body
+      for (int i = 1; i <= 4; i++) {
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: Offset(cx - i * 4.0, cy + 2),
+            width: kFielderRadius * 2.2 * stretch,
+            height: kFielderRadius * 1.5,
+          ),
+          Paint()
+            ..color = kColorFielderKit.withValues(alpha: 0.18 - i * 0.035),
+        );
+      }
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: Offset(cx, cy + 2),
+          width: kFielderRadius * 2.2 * stretch,
+          height: kFielderRadius * 1.5,
+        ),
+        Paint()..color = kColorFielderKit,
+      );
+      // Head trails behind during the dive
+      canvas.drawCircle(
+        Offset(cx + kFielderRadius * (stretch - 1.0) * 0.6,
+            cy - kFielderRadius * 0.3),
+        kFielderRadius * 0.55,
+        Paint()..color = kColorSkin,
+      );
+      // Skip the standard upright body render below.
+      return;
     }
 
     // Body — kit jersey base + collar accent
