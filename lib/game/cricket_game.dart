@@ -136,6 +136,55 @@ class CricketGame extends FlameGame
   /// terminal handlers can see whether it was a wide / no-ball.
   BowlConfig? _currentBowl;
 
+  /// Set true at the end of a no-ball delivery; promoted to `_freeHitActive`
+  /// on the next `BallLaunched`. The intervening ball is a *free hit*: the
+  /// batsman can't be dismissed bowled or caught (run-outs still count).
+  bool _nextDeliveryIsFreeHit = false;
+  bool _freeHitActive = false;
+
+  /// True for one delivery after a run-out — `_finishDelivery` consults
+  /// this when attributing the wicket so the *non-striker* (the batsman
+  /// who was running TOWARD the striker stumps and got dismissed) is
+  /// flagged out, instead of the striker (who survived).
+  bool _lastWicketWasRunOut = false;
+
+  /// Frozen stats of batsmen who have been dismissed earlier in this
+  /// innings. The 2 live `Batsman` slots get fresh identities + reset
+  /// stats each time a wicket falls (`_newPartnership` → `_retireBatsman`),
+  /// so the scorecard at the end can list every batsman who came in,
+  /// not just the surviving pair.
+  final List<RetiredBatsman> _retiredBatsmen = [];
+  /// Public accessor for the GameOver scorecard.
+  List<RetiredBatsman> get retiredBatsmen => List.unmodifiable(_retiredBatsmen);
+
+  /// Walks the cricket roster (8 → 9 → 10 → 1 → 2 …, skipping the original
+  /// jersey numbers 7 and 11 already in use). Used by `_retireBatsman` to
+  /// hand a fresh identity to the slot when a new batsman walks in.
+  int _jerseyCounter = 0;
+  static const List<String> _jerseyPool = [
+    '8', '9', '10', '1', '2', '3', '4', '5', '6', '12', '13',
+  ];
+  String _nextJersey() {
+    final n = _jerseyPool[_jerseyCounter % _jerseyPool.length];
+    _jerseyCounter++;
+    return n;
+  }
+
+  /// Snapshot a dismissed batsman's stats into `_retiredBatsmen`, then
+  /// reset the slot's stats and assign a fresh jersey number so the next
+  /// time this `Batsman` object is used it represents a different player.
+  void _retireBatsman(Batsman b) {
+    _retiredBatsmen.add(RetiredBatsman(
+      jerseyNumber: b.jerseyNumber,
+      runs: b.runs,
+      ballsFaced: b.ballsFaced,
+      fours: b.fours,
+      sixes: b.sixes,
+    ));
+    b.jerseyNumber = _nextJersey();
+    b.resetStats();
+  }
+
   /// Per-bowler-kind innings stats, tallied in `_finishDelivery`. Drives
   /// the bowling card on the GameOver overlay.
   final Map<BowlerKind, BowlerStats> bowlerStats = {
@@ -156,6 +205,27 @@ class CricketGame extends FlameGame
   // Screen-shake — magnitude in pixels, decays linearly each frame.
   double _shake = 0;
   final math.Random _shakeRng = math.Random();
+
+  // Camera zoom — brief cinematic punch-in on key moments (wicket / six /
+  // catch). Lerps `_zoomCurrent` toward `_zoomTarget` and snaps the target
+  // back to 1.0 after `_zoomDecayAt` (game-time). Pivot is the world point
+  // we want centred during the zoom.
+  double _zoomCurrent = 1.0;
+  double _zoomTarget = 1.0;
+  Vector2 _zoomPivot = Vector2.zero();
+  double _zoomDecayAt = 0;
+
+  /// Public — triggers a brief zoom on [worldPivot]. Called on wicket /
+  /// six / catch / boundary save.
+  void cameraZoom(
+    Vector2 worldPivot, {
+    double amount = 1.15,
+    double holdSec = 0.9,
+  }) {
+    _zoomTarget = amount;
+    _zoomPivot = worldPivot.clone();
+    _zoomDecayAt = _gameTime + holdSec;
+  }
 
   // Active fielder — picked on BatContact, tracks the ball each frame for
   // ground shots; for lofted shots it commits to the predicted landing once.
@@ -251,6 +321,13 @@ class CricketGame extends FlameGame
         _setRunning(false);
         _outcomeRuns = 0;
         _outcomeWicket = false;
+        // Promote the deferred free-hit flag from the previous no-ball.
+        // For the duration of THIS delivery, the batsman cannot be bowled
+        // or caught — only run-outs count. HUD listens to `FreeHitCalled`
+        // and renders a persistent "FREE HIT" banner.
+        _freeHitActive = _nextDeliveryIsFreeHit;
+        _nextDeliveryIsFreeHit = false;
+        if (_freeHitActive) eventBus.fire(const FreeHitCalled());
         // Reset replay capture for the new delivery.
         _replayFrames.clear();
         _replayTimes.clear();
@@ -351,9 +428,24 @@ class CricketGame extends FlameGame
         _setRunning(false);
         // Was this a fielder's throw smashing into the stumps for a run-out?
         // If so, route to the run-out resolver — the batsman might still be
-        // safely in their crease (= no wicket, runs stand).
+        // safely in their crease (= no wicket, runs stand). Run-outs DO
+        // count on a free hit, so we resolve normally either way.
         if (_throwInProgress) {
           _resolveThrowAtStumps();
+          return;
+        }
+        // Free hit — bowled doesn't count as a wicket. Bails fly visually
+        // but the batsman lives. Treat as a dot ball (legal delivery, no
+        // runs from the bowl, ball still counts).
+        if (_freeHitActive) {
+          _runsThisBall = 0;
+          _outcomeRuns = 0;
+          _outcomeWicket = false;
+          stumps.flyBails();
+          striker.resetIdle();
+          nonStriker.resetIdle();
+          _sendFieldersHome();
+          _finishDelivery();
           return;
         }
         _runsThisBall = 0;
@@ -362,6 +454,10 @@ class CricketGame extends FlameGame
         scoreManager.addWicket();
         stumps.flyBails();
         shakeScreen(10);
+        cameraZoom(Vector2(
+          stumps.position.x + stumps.size.x / 2,
+          stumps.position.y + stumps.size.y / 2,
+        ));
         SoundService.instance.wicket();
         HapticService.instance.medium();
         striker.resetIdle();
@@ -372,12 +468,30 @@ class CricketGame extends FlameGame
       case BallCaught(:final by):
         _inputEnabled = false;
         _setRunning(false);
+        // Free hit — caught doesn't count as a wicket. The fielder still
+        // takes the ball (visually); the batsman survives. Treat as a dot.
+        if (_freeHitActive) {
+          _runsThisBall = 0;
+          _outcomeRuns = 0;
+          _outcomeWicket = false;
+          fielders[by]?.flashHighlight();
+          striker.resetIdle();
+          nonStriker.resetIdle();
+          _sendFieldersHome();
+          _finishDelivery();
+          return;
+        }
         _runsThisBall = 0;
         _outcomeRuns = 0;
         _outcomeWicket = true;
         scoreManager.addWicket();
         fielders[by]?.flashHighlight();
         shakeScreen(8);
+        // Zoom on the catcher
+        final catcher = fielders[by];
+        if (catcher != null) {
+          cameraZoom(catcher.centre, amount: 1.18, holdSec: 1.0);
+        }
         SoundService.instance.caught();
         HapticService.instance.medium();
         striker.resetIdle();
@@ -448,6 +562,14 @@ class CricketGame extends FlameGame
         ));
         shakeScreen(runs == kBoundarySixRuns ? 14 : 8);
         if (runs == kBoundarySixRuns) {
+          // Cinematic zoom on the ball's last position before it cleared
+          // the rope.
+          cameraZoom(
+            Vector2(ball.position.x + ball.size.x / 2,
+                ball.position.y + ball.size.y / 2),
+            amount: 1.20,
+            holdSec: 1.1,
+          );
           SoundService.instance.cheerSix();
           HapticService.instance.heavy();
         } else {
@@ -511,6 +633,11 @@ class CricketGame extends FlameGame
 
       case BoundarySaved():
         // HUD-only event; CricketGame fires it from BallFielded.
+        break;
+
+      case FreeHitCalled():
+        // HUD-only event; CricketGame fires it on BallLaunched when the
+        // previous delivery was a no-ball.
         break;
     }
   }
@@ -581,9 +708,23 @@ class CricketGame extends FlameGame
       if (completed > 0) scoreManager.addRuns(completed);
       _outcomeRuns = completed;
       _outcomeWicket = true;
+      // Run-out attribution: the throw arrives at the *striker's* stumps,
+      // and at this point the `nonStriker` variable references the batsman
+      // running TOWARD those stumps (the `striker` variable is running away
+      // toward the non-striker end). So the dismissed batsman is the
+      // non-striker. `_lastWicketWasRunOut` tells `_finishDelivery` to skip
+      // its default `striker.isOut = true` line — the runs still attribute
+      // to the striker (they faced the ball), but the wicket goes to the
+      // non-striker (they got dismissed).
+      nonStriker.isOut = true;
+      _lastWicketWasRunOut = true;
       scoreManager.addWicket();
       stumps.flyBails();
       shakeScreen(10);
+      cameraZoom(Vector2(
+        stumps.position.x + stumps.size.x / 2,
+        stumps.position.y + stumps.size.y / 2,
+      ));
       SoundService.instance.wicket();
       HapticService.instance.heavy();
       if (by != null) eventBus.fire(RunOutCalled(completed, by.fieldPosition));
@@ -654,7 +795,15 @@ class CricketGame extends FlameGame
   /// after a wicket, or on game restart. Both batsmen go to their original
   /// home ends; the strike reference snaps to the original `striker`
   /// (whoever started the innings at the bottom).
+  ///
+  /// Also retires any batsman with `isOut == true` — snapshots their stats
+  /// into `_retiredBatsmen`, resets the slot's stats, and gives them a new
+  /// jersey number for when they walk in next as a fresh batsman. This is
+  /// the fix for the 2-Batsman model: each slot is reused across the
+  /// innings, but the scorecard tracks every dismissed batsman separately.
   void _newPartnership() {
+    if (striker.isOut) _retireBatsman(striker);
+    if (nonStriker.isOut) _retireBatsman(nonStriker);
     // If references were swapped earlier (mid-innings odd-run rotation),
     // unswap so the bat-equipped striker is the one whose home is the
     // bottom crease.
@@ -669,6 +818,17 @@ class CricketGame extends FlameGame
     _gameTime += dt;
     if (_shake > 0) {
       _shake = (_shake - dt * 40).clamp(0.0, 60.0);
+    }
+    // Camera zoom — after the hold expires the target snaps back to 1.0;
+    // either way `_zoomCurrent` lerps toward target each frame.
+    if (_gameTime >= _zoomDecayAt) {
+      _zoomTarget = 1.0;
+    }
+    final dz = _zoomTarget - _zoomCurrent;
+    if (dz.abs() > 0.001) {
+      _zoomCurrent += dz * (dt * 8).clamp(0.0, 1.0);
+    } else {
+      _zoomCurrent = _zoomTarget;
     }
 
     // Replay capture — record live ball positions while the delivery is in
@@ -727,16 +887,26 @@ class CricketGame extends FlameGame
 
   @override
   void render(ui.Canvas canvas) {
-    if (_shake > 0.1) {
+    final shake = _shake > 0.1;
+    final zoom = _zoomCurrent > 1.005;
+    if (!shake && !zoom) {
+      super.render(canvas);
+      return;
+    }
+    canvas.save();
+    if (zoom) {
+      // Scale around the pivot so the action stays anchored on screen.
+      canvas.translate(_zoomPivot.x, _zoomPivot.y);
+      canvas.scale(_zoomCurrent);
+      canvas.translate(-_zoomPivot.x, -_zoomPivot.y);
+    }
+    if (shake) {
       final dx = (_shakeRng.nextDouble() - 0.5) * _shake * 2;
       final dy = (_shakeRng.nextDouble() - 0.5) * _shake * 2;
-      canvas.save();
       canvas.translate(dx, dy);
-      super.render(canvas);
-      canvas.restore();
-    } else {
-      super.render(canvas);
     }
+    super.render(canvas);
+    canvas.restore();
   }
 
   /// Pick the fielder closest to where the ball is heading. Looks `kFielderChaseLookaheadSec`
@@ -827,9 +997,18 @@ class CricketGame extends FlameGame
     scoreManager.reset();
     striker.resetStats();
     nonStriker.resetStats();
+    // Restore the original opening-pair jersey numbers — `_retireBatsman`
+    // may have rotated them through the pool during the previous match.
+    striker.jerseyNumber = '7';
+    nonStriker.jerseyNumber = '11';
     for (final s in bowlerStats.values) {
       s.reset();
     }
+    _retiredBatsmen.clear();
+    _jerseyCounter = 0;
+    _nextDeliveryIsFreeHit = false;
+    _freeHitActive = false;
+    _lastWicketWasRunOut = false;
     innings = Innings.playerBats;
     firstInningsScore = null;
     target = null;
@@ -853,6 +1032,9 @@ class CricketGame extends FlameGame
     nonStriker.swingWindowSec = s.swingWindowSec;
     // Pitch type scales bounce height for the whole match.
     ball.bounceMultiplier = s.pitchBounceMul;
+    // Time of day — flip the Pitch into night-mode rendering.
+    final p = children.whereType<Pitch>().firstOrNull;
+    p?.isNight = s.timeOfDay == DayNight.night;
     // Tier 2: fielding scales with difficulty
     for (final f in fielders.values) {
       f.speed = kFielderSpeed * s.fielderSpeedMul;
@@ -905,6 +1087,10 @@ class CricketGame extends FlameGame
     _newPartnership();
     striker.resetStats();
     nonStriker.resetStats();
+    // Restore opening-pair jersey numbers — they may have rotated through
+    // the pool during the previous innings as wickets fell.
+    striker.jerseyNumber = '7';
+    nonStriker.jerseyNumber = '11';
     for (final s in bowlerStats.values) {
       s.reset();
     }
@@ -912,6 +1098,11 @@ class CricketGame extends FlameGame
     _sendFieldersHome();
     _throwInProgress = false;
     _throwingFielder = null;
+    _nextDeliveryIsFreeHit = false;
+    _freeHitActive = false;
+    _lastWicketWasRunOut = false;
+    _retiredBatsmen.clear();
+    _jerseyCounter = 0;
     _inputEnabled = false;
     _setRunning(false);
     _runsThisBall = 0;
@@ -946,6 +1137,11 @@ class CricketGame extends FlameGame
     _sendFieldersHome();
     _throwInProgress = false;
     _throwingFielder = null;
+    _nextDeliveryIsFreeHit = false;
+    _freeHitActive = false;
+    _lastWicketWasRunOut = false;
+    _retiredBatsmen.clear();
+    _jerseyCounter = 0;
     _inputEnabled = false;
     _setRunning(false);
     _runsThisBall = 0;
@@ -1067,6 +1263,14 @@ class CricketGame extends FlameGame
     for (final s in bowlerStats.values) {
       s.reset();
     }
+    // Each innings gets its own retired-batsmen list and free-hit / run-out
+    // bookkeeping — the player's first-innings dismissals don't carry over
+    // into the AI's chase scorecard.
+    _retiredBatsmen.clear();
+    _jerseyCounter = 0;
+    _nextDeliveryIsFreeHit = false;
+    _freeHitActive = false;
+    _lastWicketWasRunOut = false;
     innings = Innings.aiBats;
     stateNotifier.setInnings(innings, target: target);
     _broadcastScore();
@@ -1102,6 +1306,7 @@ class CricketGame extends FlameGame
       chase: settings.chase,
       pitchType: settings.pitchType,
       fieldPreset: settings.fieldPreset,
+      timeOfDay: settings.timeOfDay,
       runs: scoreManager.runs,
       wickets: scoreManager.wickets,
       ballsBowled: scoreManager.ballsBowled,
@@ -1129,6 +1334,7 @@ class CricketGame extends FlameGame
       chase: saved.chase,
       pitchType: saved.pitchType,
       fieldPreset: saved.fieldPreset,
+      timeOfDay: saved.timeOfDay,
     ));
     overlays.remove('MainMenu');
     scoreManager.reset();
@@ -1219,6 +1425,8 @@ class CricketGame extends FlameGame
       sixes: playerSixes,
       wickets: playerWickets,
       playerWon: playerWon,
+      format: settings.format.label,
+      difficulty: settings.difficulty.label,
     );
     SaveService.instance.clear();
   }
@@ -1269,12 +1477,21 @@ class CricketGame extends FlameGame
     // No-ball penalty — +1 to score, ball still counts. Fired before the
     // BallSettled outcome so the HUD banner is visible. (We don't fire on
     // wides because they re-bowl via _callWide and don't reach _finishDelivery.)
+    // Setting `_nextDeliveryIsFreeHit` here makes the *next* legal delivery
+    // a free hit (batsman can't be bowled or caught out — only run-outs).
     if (_currentBowl?.isNoBall == true) {
       scoreManager.addRuns(1);
       eventBus.fire(const ExtraCalled(ExtraKind.noBall, 1));
       SoundService.instance.run();
       HapticService.instance.medium();
+      _nextDeliveryIsFreeHit = true;
     }
+    // The current delivery's free-hit flag is consumed: a free hit only
+    // covers the one delivery after a no-ball. Cleared regardless of whether
+    // it was active so the next ball starts fresh unless `_nextDeliveryIsFreeHit`
+    // is true (meaning *this* ball was itself a no-ball — back-to-back free
+    // hits, real cricket allows that).
+    _freeHitActive = false;
 
     final outcome = BallOutcomeLabel.fromRunsThisBall(
       _outcomeRuns,
@@ -1290,7 +1507,12 @@ class CricketGame extends FlameGame
     striker.ballsFaced += 1;
     if (_outcomeRuns == 4) striker.fours += 1;
     if (_outcomeRuns == 6) striker.sixes += 1;
-    if (_outcomeWicket) striker.isOut = true;
+    // Wicket attribution: bowled / caught / settled-stump dismissals are the
+    // striker's. Run-outs already flagged the *non-striker* in
+    // `_resolveThrowAtStumps` (they were running toward the stumps), so the
+    // striker stays not-out and we just clear the run-out flag here.
+    if (_outcomeWicket && !_lastWicketWasRunOut) striker.isOut = true;
+    _lastWicketWasRunOut = false;
 
     // ── Per-bowler attribution ───────────────────────────────────────────
     final bowlerKind = _currentBowl?.kind ?? BowlerKind.medium;
@@ -1564,4 +1786,24 @@ class _PlayerInningsStats {
     required this.fours,
     required this.sixes,
   });
+}
+
+/// Frozen stats of a batsman who has been dismissed earlier in the innings.
+/// `_retiredBatsmen` accumulates these so the GameOver scorecard can list
+/// every batsman who came in (not just the live pair). Public so the
+/// overlay widget can read it.
+class RetiredBatsman {
+  final String jerseyNumber;
+  final int runs;
+  final int ballsFaced;
+  final int fours;
+  final int sixes;
+  const RetiredBatsman({
+    required this.jerseyNumber,
+    required this.runs,
+    required this.ballsFaced,
+    required this.fours,
+    required this.sixes,
+  });
+  double get strikeRate => ballsFaced == 0 ? 0 : runs * 100.0 / ballsFaced;
 }

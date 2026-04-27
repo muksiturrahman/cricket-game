@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
 import 'package:flutter/material.dart';
@@ -19,6 +20,11 @@ import '../utils/theme.dart';
 /// seeded random) so we don't allocate per frame.
 class Pitch extends PositionComponent with HasGameReference {
   Pitch() : super(priority: 0);
+
+  /// When true, render the night-mode palette: deep blue sky, dimmer
+  /// outfield, four floodlight halos around the boundary. Set by
+  /// `CricketGame._applySettings` from `MatchSettings.timeOfDay`.
+  bool isNight = false;
 
   // Pre-baked decorations cached at onLoad.
   final List<_CrowdSpeck> _crowdSpecks = [];
@@ -135,12 +141,25 @@ class Pitch extends PositionComponent with HasGameReference {
     final h = size.y;
     final rect = Rect.fromLTWH(0, 0, w, h);
 
-    // 1. Sky gradient
+    // 1. Sky gradient — daytime uses the standard sky; night swaps in a
+    // deep-navy linear so the stadium silhouette reads as "after dark".
     final skyRect = Rect.fromLTWH(0, 0, w, h * 0.18);
-    canvas.drawRect(
-      skyRect,
-      Paint()..shader = AppGradients.sky().createShader(skyRect),
-    );
+    if (isNight) {
+      canvas.drawRect(
+        skyRect,
+        Paint()
+          ..shader = const LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFF050B20), Color(0xFF14213D), Color(0xFF263F66)],
+          ).createShader(skyRect),
+      );
+    } else {
+      canvas.drawRect(
+        skyRect,
+        Paint()..shader = AppGradients.sky().createShader(skyRect),
+      );
+    }
 
     // 2. Clouds — drift slowly across the sky
     for (final c in _clouds) {
@@ -305,6 +324,45 @@ class Pitch extends PositionComponent with HasGameReference {
     // 10. Crease boxes (popping + return creases) at each end
     _drawCreaseBox(canvas, cx, h * 0.70, sw);
     _drawCreaseBox(canvas, cx, h * 0.28, sw);
+
+    // 11. Night-mode overlay: dim the whole field with a navy tint, then
+    // paint four floodlight cones at the corners of the stadium.
+    if (isNight) {
+      // Dim layer — multiplicative-ish effect via translucent navy.
+      canvas.drawRect(
+        rect,
+        Paint()..color = const Color(0xFF0A1A33).withValues(alpha: 0.42),
+      );
+      // Floodlights at the four "corners" of the boundary ellipse.
+      final lights = [
+        Offset(w * 0.10, h * 0.15),
+        Offset(w * 0.90, h * 0.15),
+        Offset(w * 0.10, h * 0.88),
+        Offset(w * 0.90, h * 0.88),
+      ];
+      for (final l in lights) {
+        // Pole (just a tiny stub — the cone does most of the work)
+        canvas.drawCircle(
+          l,
+          3,
+          Paint()..color = const Color(0xFFFFE082),
+        );
+        // Soft radial glow
+        canvas.drawCircle(
+          l,
+          120,
+          Paint()
+            ..shader = ui.Gradient.radial(
+              l,
+              120,
+              [
+                const Color(0xFFFFF59D).withValues(alpha: 0.25),
+                const Color(0x00FFE082),
+              ],
+            ),
+        );
+      }
+    }
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────

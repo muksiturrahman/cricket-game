@@ -67,6 +67,16 @@ enum Difficulty {
   });
 }
 
+/// Time of day — affects sky tint, outfield lighting, and adds floodlight
+/// halos at night. Pure visual; no gameplay impact.
+enum DayNight {
+  day(label: 'Day'),
+  night(label: 'Night');
+
+  final String label;
+  const DayNight({required this.label});
+}
+
 /// Captain's pre-innings field placement. Positions are normalized
 /// `(x, y)` ratios of screen size, applied to the matching `Fielder`
 /// instances on innings start. Each preset keeps the keeper at
@@ -192,12 +202,16 @@ class MatchSettings {
   /// Captain's field placement preset. Defaults to a spread defensive field.
   final FieldPreset fieldPreset;
 
+  /// Time of day — purely cosmetic (sky / lighting). Defaults to day.
+  final DayNight timeOfDay;
+
   const MatchSettings({
     this.format = MatchFormat.t5,
     this.difficulty = Difficulty.normal,
     this.chase = false,
     this.pitchType = PitchType.flat,
     this.fieldPreset = FieldPreset.defensive,
+    this.timeOfDay = DayNight.day,
   });
 
   int get maxOvers => format.overs;
@@ -218,6 +232,7 @@ class MatchSettings {
     bool? chase,
     PitchType? pitchType,
     FieldPreset? fieldPreset,
+    DayNight? timeOfDay,
   }) =>
       MatchSettings(
         format: format ?? this.format,
@@ -225,5 +240,6 @@ class MatchSettings {
         chase: chase ?? this.chase,
         pitchType: pitchType ?? this.pitchType,
         fieldPreset: fieldPreset ?? this.fieldPreset,
+        timeOfDay: timeOfDay ?? this.timeOfDay,
       );
 }

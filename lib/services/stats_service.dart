@@ -1,7 +1,62 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+/// One row of the per-match history. Persisted as JSON in
+/// `shared_preferences` so we keep the last `_kHistoryMax` matches across
+/// app restarts. Fields chosen for the menu's history list.
+class MatchHistoryEntry {
+  final int runs;
+  final int wickets;
+  final int fours;
+  final int sixes;
+  final bool won;
+  final String format; // e.g. "T5", "T10"
+  final String difficulty; // e.g. "Normal"
+  /// Unix epoch ms for sortability.
+  final int timestampMs;
+
+  const MatchHistoryEntry({
+    required this.runs,
+    required this.wickets,
+    required this.fours,
+    required this.sixes,
+    required this.won,
+    required this.format,
+    required this.difficulty,
+    required this.timestampMs,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'r': runs,
+        'w': wickets,
+        '4s': fours,
+        '6s': sixes,
+        'won': won,
+        'fmt': format,
+        'diff': difficulty,
+        't': timestampMs,
+      };
+
+  static MatchHistoryEntry? fromJson(Map<String, dynamic> j) {
+    try {
+      return MatchHistoryEntry(
+        runs: j['r'] as int,
+        wickets: j['w'] as int,
+        fours: j['4s'] as int,
+        sixes: j['6s'] as int,
+        won: j['won'] as bool,
+        format: j['fmt'] as String,
+        difficulty: j['diff'] as String,
+        timestampMs: j['t'] as int,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
 
 /// Aggregate stats persisted across runs.
 class GameStats {
@@ -13,6 +68,8 @@ class GameStats {
   final int totalSixes;
   final int totalWickets;
   final bool tutorialSeen;
+  /// Per-match log, newest first. Capped at `_kHistoryMax`.
+  final List<MatchHistoryEntry> recentMatches;
 
   const GameStats({
     required this.matchesPlayed,
@@ -23,6 +80,7 @@ class GameStats {
     required this.totalSixes,
     required this.totalWickets,
     required this.tutorialSeen,
+    this.recentMatches = const [],
   });
 
   static const empty = GameStats(
@@ -34,6 +92,7 @@ class GameStats {
     totalSixes: 0,
     totalWickets: 0,
     tutorialSeen: false,
+    recentMatches: [],
   );
 
   GameStats copyWith({
@@ -45,6 +104,7 @@ class GameStats {
     int? totalSixes,
     int? totalWickets,
     bool? tutorialSeen,
+    List<MatchHistoryEntry>? recentMatches,
   }) =>
       GameStats(
         matchesPlayed: matchesPlayed ?? this.matchesPlayed,
@@ -55,6 +115,7 @@ class GameStats {
         totalSixes: totalSixes ?? this.totalSixes,
         totalWickets: totalWickets ?? this.totalWickets,
         tutorialSeen: tutorialSeen ?? this.tutorialSeen,
+        recentMatches: recentMatches ?? this.recentMatches,
       );
 }
 
@@ -74,6 +135,8 @@ class StatsService extends ChangeNotifier {
   static const _kTotalSixes = 'stats.totalSixes';
   static const _kTotalWickets = 'stats.totalWickets';
   static const _kTutorialSeen = 'stats.tutorialSeen';
+  static const _kHistory = 'stats.history';
+  static const int _kHistoryMax = 12;
 
   GameStats _cache = GameStats.empty;
   GameStats get current => _cache;
@@ -96,6 +159,7 @@ class StatsService extends ChangeNotifier {
         totalSixes: p.getInt(_kTotalSixes) ?? 0,
         totalWickets: p.getInt(_kTotalWickets) ?? 0,
         tutorialSeen: p.getBool(_kTutorialSeen) ?? false,
+        recentMatches: _loadHistory(p),
       );
     } catch (e) {
       if (kDebugMode) debugPrint('StatsService.init failed: $e');
@@ -104,13 +168,41 @@ class StatsService extends ChangeNotifier {
     notifyListeners();
   }
 
+  List<MatchHistoryEntry> _loadHistory(SharedPreferences p) {
+    final raw = p.getString(_kHistory);
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      return list
+          .map((e) => MatchHistoryEntry.fromJson(e as Map<String, dynamic>))
+          .whereType<MatchHistoryEntry>()
+          .toList();
+    } catch (e) {
+      if (kDebugMode) debugPrint('StatsService._loadHistory failed: $e');
+      return const [];
+    }
+  }
+
   Future<void> recordMatch({
     required int playerRuns,
     required int fours,
     required int sixes,
     required int wickets,
     required bool playerWon,
+    String format = 'T?',
+    String difficulty = '?',
   }) async {
+    final entry = MatchHistoryEntry(
+      runs: playerRuns,
+      wickets: wickets,
+      fours: fours,
+      sixes: sixes,
+      won: playerWon,
+      format: format,
+      difficulty: difficulty,
+      timestampMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    final history = [entry, ..._cache.recentMatches].take(_kHistoryMax).toList();
     final updated = _cache.copyWith(
       matchesPlayed: _cache.matchesPlayed + 1,
       matchesWon: _cache.matchesWon + (playerWon ? 1 : 0),
@@ -120,6 +212,7 @@ class StatsService extends ChangeNotifier {
       totalFours: _cache.totalFours + fours,
       totalSixes: _cache.totalSixes + sixes,
       totalWickets: _cache.totalWickets + wickets,
+      recentMatches: history,
     );
     _cache = updated;
     notifyListeners();
@@ -133,6 +226,8 @@ class StatsService extends ChangeNotifier {
         p.setInt(_kTotalFours, updated.totalFours),
         p.setInt(_kTotalSixes, updated.totalSixes),
         p.setInt(_kTotalWickets, updated.totalWickets),
+        p.setString(_kHistory,
+            jsonEncode(history.map((e) => e.toJson()).toList())),
       ]);
     } catch (e) {
       if (kDebugMode) debugPrint('StatsService.recordMatch failed: $e');
@@ -166,6 +261,7 @@ class StatsService extends ChangeNotifier {
         p.remove(_kTotalSixes),
         p.remove(_kTotalWickets),
         p.remove(_kTutorialSeen),
+        p.remove(_kHistory),
       ]);
     } catch (e) {
       if (kDebugMode) debugPrint('StatsService.reset failed: $e');

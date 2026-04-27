@@ -19,7 +19,13 @@ class Batsman extends PositionComponent with HasGameReference {
       : super(priority: 4);
 
   final bool homeAtStriker;
-  final String jerseyNumber;
+  /// Rendered shirt number — mutable because each `Batsman` slot is reused
+  /// across the innings as different players walk in (see
+  /// `CricketGame._retireBatsman`). On a wicket, the dismissed batsman's
+  /// stats are snapshotted into a "retired" list and the slot is given a
+  /// new jersey number so the scorecard can show every batsman who came
+  /// in, not just the surviving pair.
+  String jerseyNumber;
 
   late Bat bat;
 

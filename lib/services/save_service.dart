@@ -19,6 +19,8 @@ class SavedMatch {
   final PitchType pitchType;
   /// Captain's field placement chosen at start. Defaults to defensive.
   final FieldPreset fieldPreset;
+  /// Day / night setting at start. Defaults to day for legacy snapshots.
+  final DayNight timeOfDay;
 
   /// Live scoreboard at save time.
   final int runs;
@@ -47,6 +49,7 @@ class SavedMatch {
     required this.chase,
     this.pitchType = PitchType.flat,
     this.fieldPreset = FieldPreset.defensive,
+    this.timeOfDay = DayNight.day,
     required this.runs,
     required this.wickets,
     required this.ballsBowled,
@@ -68,6 +71,7 @@ class SavedMatch {
         'chase': chase,
         'pitchType': pitchType.name,
         'fieldPreset': fieldPreset.name,
+        'timeOfDay': timeOfDay.name,
         'runs': runs,
         'wickets': wickets,
         'ballsBowled': ballsBowled,
@@ -101,6 +105,11 @@ class SavedMatch {
             .firstWhere(
               (f) => f.name == (j['fieldPreset'] as String?),
               orElse: () => FieldPreset.defensive,
+            ),
+        timeOfDay: DayNight.values
+            .firstWhere(
+              (t) => t.name == (j['timeOfDay'] as String?),
+              orElse: () => DayNight.day,
             ),
         runs: (j['runs'] as int?) ?? 0,
         wickets: (j['wickets'] as int?) ?? 0,

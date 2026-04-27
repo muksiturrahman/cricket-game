@@ -103,3 +103,11 @@ class BoundarySaved extends DeliveryEvent {
   final FieldPosition by;
   const BoundarySaved(this.by);
 }
+
+/// Fired on `BallLaunched` when the previous ball was a no-ball. The next
+/// delivery is a *free hit* — the batsman can't be dismissed bowled or
+/// caught (run-outs still count). HUD shows a persistent "FREE HIT" cue
+/// for the duration of this delivery.
+class FreeHitCalled extends DeliveryEvent {
+  const FreeHitCalled();
+}

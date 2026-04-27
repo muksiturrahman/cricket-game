@@ -39,6 +39,7 @@ class _MainMenuOverlayState extends State<MainMenuOverlay>
   bool _chase = false;
   PitchType _pitch = PitchType.flat;
   FieldPreset _field = FieldPreset.defensive;
+  DayNight _time = DayNight.day;
   late final AnimationController _entry;
   late final AnimationController _badgeSpin;
 
@@ -181,6 +182,15 @@ class _MainMenuOverlayState extends State<MainMenuOverlay>
                             _field.blurb,
                             style: AppText.body.copyWith(fontSize: 12),
                           ),
+                          const SizedBox(height: 18),
+                          _SectionLabel(text: 'Time'),
+                          const SizedBox(height: 8),
+                          _PillRow<DayNight>(
+                            values: DayNight.values,
+                            selected: _time,
+                            labelOf: (t) => t.label,
+                            onSelected: (t) => setState(() => _time = t),
+                          ),
                         ],
                       ),
                     ),
@@ -196,6 +206,7 @@ class _MainMenuOverlayState extends State<MainMenuOverlay>
                         chase: _chase,
                         pitchType: _pitch,
                         fieldPreset: _field,
+                        timeOfDay: _time,
                       )),
                     ),
                     const SizedBox(height: 10),
@@ -392,6 +403,7 @@ class GameOverOverlay extends StatelessWidget {
                     _BattingCard(
                       striker: game.striker,
                       nonStriker: game.nonStriker,
+                      retired: game.retiredBatsmen,
                     ),
                     const SizedBox(height: 10),
                     _BowlingCard(stats: game.bowlerStats),
@@ -535,6 +547,72 @@ class _CareerStatsStrip extends StatelessWidget {
               _StatChip(label: '6s', value: '${stats.totalSixes}'),
             ],
           ),
+          if (stats.recentMatches.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            const Divider(color: Color(0x33FFC93C), height: 1),
+            const SizedBox(height: 8),
+            Text(
+              'LAST ${stats.recentMatches.length} MATCHES',
+              style: AppText.label.copyWith(
+                color: kPalette.primary,
+                fontSize: 9,
+              ),
+            ),
+            const SizedBox(height: 6),
+            // Each row: format · runs/wickets · result chip
+            for (final m in stats.recentMatches.take(6))
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 1),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 36,
+                      child: Text(
+                        m.format,
+                        style: const TextStyle(
+                          color: Colors.white60,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Text(
+                        '${m.runs}/${m.wickets}'
+                        '  ·  ${m.fours}×4  ${m.sixes}×6',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: m.won
+                            ? const Color(0xFF34C759).withValues(alpha: 0.22)
+                            : Colors.white.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        m.won ? 'WON' : '—',
+                        style: TextStyle(
+                          color: m.won
+                              ? const Color(0xFF34C759)
+                              : Colors.white60,
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
         ],
       ),
     );
@@ -1116,12 +1194,19 @@ class _RecentStrip extends StatelessWidget {
 
 // ── Scorecard cards (game-over overlay) ────────────────────────────────────
 
-/// Batting card — per-batsman runs / balls / 4s / 6s / SR. Shows both
-/// batsmen even if one didn't face a ball (jersey number + dash).
+/// Batting card — per-batsman runs / balls / 4s / 6s / SR. Lists all batsmen
+/// who came in this innings: the retired (dismissed earlier) ones first,
+/// then the live pair. Without the retired list the scorecard would only
+/// ever show the surviving 2 — misleading after multiple wickets.
 class _BattingCard extends StatelessWidget {
   final Batsman striker;
   final Batsman nonStriker;
-  const _BattingCard({required this.striker, required this.nonStriker});
+  final List<RetiredBatsman> retired;
+  const _BattingCard({
+    required this.striker,
+    required this.nonStriker,
+    required this.retired,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1145,6 +1230,7 @@ class _BattingCard extends StatelessWidget {
               )),
           const SizedBox(height: 6),
           _ScorecardRow.header(const ['#', 'BATSMAN', 'R', 'B', '4', '6', 'SR']),
+          for (final r in retired) _ScorecardRow.retired(r),
           _ScorecardRow.batsman(striker),
           _ScorecardRow.batsman(nonStriker),
         ],
@@ -1223,6 +1309,21 @@ class _ScorecardRow extends StatelessWidget {
         b.ballsFaced == 0 ? '–' : b.strikeRate.toStringAsFixed(0),
       ],
       dim: dimRow,
+    );
+  }
+
+  /// Row for a dismissed batsman from the retired list. Always shows OUT.
+  factory _ScorecardRow.retired(RetiredBatsman b) {
+    return _ScorecardRow._(
+      cells: [
+        '#${b.jerseyNumber}',
+        'OUT',
+        '${b.runs}',
+        '${b.ballsFaced}',
+        '${b.fours}',
+        '${b.sixes}',
+        b.ballsFaced == 0 ? '–' : b.strikeRate.toStringAsFixed(0),
+      ],
     );
   }
 

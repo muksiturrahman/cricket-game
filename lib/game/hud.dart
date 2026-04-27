@@ -39,6 +39,11 @@ class GameHud extends PositionComponent with HasGameReference {
   /// top-right corner so the player can read the attack type at a glance.
   BowlerKind? _bowlerKind;
 
+  /// True from `FreeHitCalled` until the delivery settles. Drives a
+  /// persistent "FREE HIT" pill rendered next to the bowler badge so the
+  /// player knows they can't be bowled / caught for the rest of this ball.
+  bool _freeHitActive = false;
+
   // Recent-balls ring buffer with per-entry age for the entry-pop animation.
   final List<_RecentEntry> _recent = [];
   static const int _recentMax = 8;
@@ -51,6 +56,71 @@ class GameHud extends PositionComponent with HasGameReference {
   Color _bannerColor = Colors.white;
   double _bannerElapsed = 999;
   static const double _bannerDuration = 1.2;
+
+  // Commentary line — flavour text that fades in / out below the banner.
+  String _commentary = '';
+  double _commentaryElapsed = 999;
+  static const double _commentaryDuration = 2.4;
+  final math.Random _commentaryRng = math.Random();
+
+  /// Per-event phrase pools — picked randomly so the same event doesn't
+  /// always read the same line.
+  static const Map<String, List<String>> _phrases = {
+    'six': [
+      "That's a peach!",
+      'Sailed over the rope!',
+      'Maximum!',
+      'Out of the ground!',
+      'Cleared it with ease.',
+    ],
+    'four': [
+      'Cracking shot!',
+      'Through the covers!',
+      'To the boundary in a flash.',
+      'Beautifully timed.',
+      'Off the meat of the bat.',
+    ],
+    'wicket': [
+      'Got him!',
+      'Stumps cartwheeling!',
+      'What a delivery!',
+      'Big wicket — game on.',
+      'Through the gate!',
+    ],
+    'caught': [
+      'Brilliant catch!',
+      'Held in the deep.',
+      'Safe hands!',
+      'Lapped it up.',
+    ],
+    'runOut': [
+      'Direct hit — RUN OUT!',
+      'Inches short!',
+      'Glorious throw!',
+    ],
+    'edge': [
+      'Just feathered it.',
+      'Lucky escape — thin edge.',
+      'Beat the bat for once.',
+    ],
+    'mistimed': [
+      'Off the toe end.',
+      "Couldn't get hold of it.",
+    ],
+    'saved': [
+      'Saved at the rope!',
+      'Heroic stop on the boundary.',
+      'Great fielding!',
+    ],
+    'wide': [
+      'Down the leg side — wide.',
+      'Wayward delivery.',
+    ],
+    'noBall': [
+      'Front foot fault!',
+      'No ball — free hit coming.',
+    ],
+  };
 
   // ── TextPainter caches ─────────────────────────────────────────────────
   // The HUD redraws every frame; rebuilding a TextPainter per glyph per
@@ -134,18 +204,30 @@ class GameHud extends PositionComponent with HasGameReference {
           event.runs == kBoundarySixRuns ? 'SIX!' : 'FOUR!',
           event.runs == kBoundarySixRuns ? kPalette.primary : kPalette.accent,
         );
+        _showCommentary(event.runs == kBoundarySixRuns ? 'six' : 'four');
 
-      case WicketFallen() || BallCaught():
+      case WicketFallen():
         _runPrompt = '';
         _showBanner('OUT!', kPalette.danger);
+        _showCommentary('wicket');
+
+      case BallCaught():
+        _runPrompt = '';
+        _showBanner('OUT!', kPalette.danger);
+        _showCommentary('caught');
 
       case RunOutCalled():
         _runPrompt = '';
         _showBanner('RUN OUT!', kPalette.danger);
+        _showCommentary('runOut');
 
       case BallSettled(:final outcome):
         _recent.add(_RecentEntry(outcome));
         if (_recent.length > _recentMax) _recent.removeAt(0);
+        // Free hit only covers the one delivery — drop the pill once the
+        // ball settles. CricketGame may set it true again on the next
+        // BallLaunched if back-to-back no-balls were bowled.
+        _freeHitActive = false;
 
       case ExtraCalled():
         _runPrompt = '';
@@ -153,18 +235,28 @@ class GameHud extends PositionComponent with HasGameReference {
           event.kind == ExtraKind.wide ? 'WIDE!' : 'NO BALL!',
           const Color(0xFF42A5F5),
         );
+        _showCommentary(event.kind == ExtraKind.wide ? 'wide' : 'noBall');
 
       case ShotQualityCalled(:final quality):
         // Small mistime / edge feedback flashed via the same banner system.
         // Edge uses the danger color so it visually warns "you might be out".
         if (quality == ShotQuality.edge) {
           _showBanner('EDGE!', kPalette.danger);
+          _showCommentary('edge');
         } else if (quality == ShotQuality.mistimed) {
           _showBanner('MISTIMED', const Color(0xFFFFCC00));
+          _showCommentary('mistimed');
         }
 
       case BoundarySaved():
         _showBanner('SAVED!', kPalette.primary);
+        _showCommentary('saved');
+
+      case FreeHitCalled():
+        // Set the persistent pill (rendered alongside the bowler badge)
+        // and pop a transient banner so the cue is unmissable.
+        _freeHitActive = true;
+        _showBanner('FREE HIT', const Color(0xFF42A5F5));
 
       case BallFielded() || BallDead():
         _runPrompt = '';
@@ -182,11 +274,21 @@ class GameHud extends PositionComponent with HasGameReference {
     _bannerElapsed = 0;
   }
 
+  /// Pick a random commentary line from `_phrases[key]` and start a fresh
+  /// fade-in/out cycle. Silent if the key has no phrase pool.
+  void _showCommentary(String key) {
+    final pool = _phrases[key];
+    if (pool == null || pool.isEmpty) return;
+    _commentary = pool[_commentaryRng.nextInt(pool.length)];
+    _commentaryElapsed = 0;
+  }
+
   @override
   void update(double dt) {
     super.update(dt);
     _clock += dt;
     if (_bannerElapsed < _bannerDuration) _bannerElapsed += dt;
+    if (_commentaryElapsed < _commentaryDuration) _commentaryElapsed += dt;
     if (_scorePulse > 0) {
       _scorePulse = math.max(0, _scorePulse - dt * 3);
     }
@@ -222,9 +324,46 @@ class GameHud extends PositionComponent with HasGameReference {
     _renderScorePanel(canvas);
     _renderTargetLine(canvas);
     _renderBowlerBadge(canvas, w);
+    if (_freeHitActive) _renderFreeHitBadge(canvas, w);
     _renderRecentBalls(canvas, w);
     if (_runPrompt.isNotEmpty) _renderRunPrompt(canvas, w);
     if (_bannerElapsed < _bannerDuration) _renderBanner(canvas);
+    if (_commentaryElapsed < _commentaryDuration) _renderCommentary(canvas, w);
+  }
+
+  /// Italic commentary line below the banner. Fade-in/out over the
+  /// commentary duration; centred horizontally.
+  void _renderCommentary(Canvas canvas, double w) {
+    final t = (_commentaryElapsed / _commentaryDuration).clamp(0.0, 1.0);
+    // Fade-in 0..0.18, hold, fade-out 0.75..1.0.
+    double alpha;
+    if (t < 0.18) {
+      alpha = t / 0.18;
+    } else if (t > 0.75) {
+      alpha = (1 - t) / 0.25;
+    } else {
+      alpha = 1;
+    }
+    alpha = alpha.clamp(0.0, 1.0);
+    if (alpha <= 0.01) return;
+    final tp = TextPainter(
+      text: TextSpan(
+        text: _commentary,
+        style: TextStyle(
+          color: Colors.white.withValues(alpha: 0.92 * alpha),
+          fontSize: 16,
+          fontStyle: FontStyle.italic,
+          fontWeight: FontWeight.w500,
+          letterSpacing: 0.4,
+          shadows: [
+            Shadow(blurRadius: 6, color: Colors.black.withValues(alpha: 0.8)),
+          ],
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: w * 0.85);
+    final y = size.y * 0.46; // just under the banner (which sits at ~0.40)
+    tp.paint(canvas, Offset((w - tp.width) / 2, y));
   }
 
   /// Small pill below the recent-balls strip showing the current bowler
@@ -275,6 +414,48 @@ class GameHud extends PositionComponent with HasGameReference {
     );
     tp.paint(
         canvas, Offset(pillRect.left + padX + 12, pillRect.top + padY));
+  }
+
+  /// Persistent "FREE HIT" pill — sits to the right of the bowler badge for
+  /// the duration of the delivery after a no-ball. Cleared on `BallSettled`.
+  void _renderFreeHitBadge(Canvas canvas, double w) {
+    final tp = _buildPainter(
+      'FREE HIT',
+      const TextStyle(
+        color: Color(0xFF42A5F5),
+        fontSize: 11,
+        fontWeight: FontWeight.w900,
+        letterSpacing: 1.8,
+      ),
+    );
+    const padX = 10.0;
+    const padY = 4.0;
+    final pillW = tp.width + padX * 2;
+    final pillH = tp.height + padY * 2;
+    // Sit just below the bowler-kind pill, same y band the recent-ball strip
+    // and bowler badge already occupy. Centre-aligned, offset down so it
+    // doesn't overlap the bowler pill at y=64.
+    final pillRect = Rect.fromCenter(
+      center: Offset(w / 2, 88),
+      width: pillW,
+      height: pillH,
+    );
+    final pill = RRect.fromRectAndRadius(pillRect, const Radius.circular(12));
+    // Pulsing alpha so the pill catches the eye.
+    final pulse = (math.sin(_clock * 4.5) + 1) / 2; // 0..1
+    canvas.drawRRect(
+      pill,
+      Paint()..color = const Color(0xCC0E1A28),
+    );
+    canvas.drawRRect(
+      pill,
+      Paint()
+        ..color = const Color(0xFF42A5F5)
+            .withValues(alpha: 0.55 + pulse * 0.35)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4,
+    );
+    tp.paint(canvas, Offset(pillRect.left + padX, pillRect.top + padY));
   }
 
   Color _kindColor(BowlerKind k) {
