@@ -25,11 +25,16 @@ class SavedMatch {
 
   final Innings innings;
 
-  /// First-innings totals — only set when `innings == aiBats`.
+  /// First-innings totals — only set when `innings == aiBats`. The
+  /// fours / sixes are needed at `_finalizeMatch` time to recover the
+  /// player's batting stats; without them a mid-chase resume would log
+  /// the AI's score as the player's career stats.
   final int? firstInningsRuns;
   final int? firstInningsWickets;
   final int? firstInningsOversCompleted;
   final int? firstInningsCurrentBallInOver;
+  final int? firstInningsFours;
+  final int? firstInningsSixes;
   final int? target;
 
   const SavedMatch({
@@ -46,6 +51,8 @@ class SavedMatch {
     this.firstInningsWickets,
     this.firstInningsOversCompleted,
     this.firstInningsCurrentBallInOver,
+    this.firstInningsFours,
+    this.firstInningsSixes,
     this.target,
   });
 
@@ -66,6 +73,8 @@ class SavedMatch {
           'firstInningsOversCompleted': firstInningsOversCompleted,
         if (firstInningsCurrentBallInOver != null)
           'firstInningsCurrentBallInOver': firstInningsCurrentBallInOver,
+        if (firstInningsFours != null) 'firstInningsFours': firstInningsFours,
+        if (firstInningsSixes != null) 'firstInningsSixes': firstInningsSixes,
         if (target != null) 'target': target,
       };
 
@@ -88,6 +97,8 @@ class SavedMatch {
         firstInningsOversCompleted: j['firstInningsOversCompleted'] as int?,
         firstInningsCurrentBallInOver:
             j['firstInningsCurrentBallInOver'] as int?,
+        firstInningsFours: j['firstInningsFours'] as int?,
+        firstInningsSixes: j['firstInningsSixes'] as int?,
         target: j['target'] as int?,
       );
     } catch (e) {

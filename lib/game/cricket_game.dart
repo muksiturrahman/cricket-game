@@ -276,7 +276,9 @@ class CricketGame extends FlameGame
         ball.velocity = rebound;
         ball.ballState = BallState.inFlight;
         ball.collisionProcessed = false;
-        _runningActive = true;
+        // Use _setRunning so the ValueNotifier fires — the on-screen RUN
+        // button is bound to it and won't appear otherwise on touch.
+        _setRunning(true);
         _runsThisBall = 0;
         _lastRunAt = _gameTime - kRunCooldownSec;
         // Edges deflect backward toward the keeper — let the keeper catch
@@ -626,6 +628,23 @@ class CricketGame extends FlameGame
       _shake = (_shake - dt * 40).clamp(0.0, 60.0);
     }
 
+    // Replay capture — record live ball positions while the delivery is in
+    // progress. Skipped during an active replay (the buffer is read, not
+    // written). Limited to `kReplayMaxFrames` so older frames drop off.
+    if (!_replayActive &&
+        ball.ballState != BallState.waiting &&
+        ball.ballState != BallState.dead) {
+      _replayFrames.add(Vector2(
+        ball.position.x + ball.size.x / 2,
+        ball.position.y + ball.size.y / 2,
+      ));
+      _replayTimes.add(_gameTime);
+      if (_replayFrames.length > kReplayMaxFrames) {
+        _replayFrames.removeAt(0);
+        _replayTimes.removeAt(0);
+      }
+    }
+
     // Batsman lateral movement — A / ← move toward leg side, D / → toward off.
     // Disabled outside active play so paused / menu state can't be edited.
     if (phase == GamePhase.playing) {
@@ -893,14 +912,22 @@ class CricketGame extends FlameGame
     final rng = _shakeRng;
     // Skip the swing entirely ~15% of the time → pure dot or wicket.
     if (rng.nextDouble() < 0.15) return;
-    // Aim for the swing window, jittered slightly so the AI can be early /
-    // late and miss the ball cleanly.
+    // Aim the bat-active window to overlap with ball arrival. Mean: AI
+    // starts the swing slightly before the ball reaches the bat, so the
+    // contact happens early in the swing window (= clean). Jitter spreads
+    // the AI's timing across clean → mistimed → edge → outright miss, the
+    // same spectrum a human player produces.
+    //
+    // Note: this fires from `BallLaunched` (i.e., AFTER run-up), so the
+    // reaction is measured from ball launch, not from run-up start —
+    // any term involving `bowler.runUpSec` would just be dead time.
     final swingWindow = batsman.swingWindowSec;
-    final reactionMs = ((bowler.runUpSec * 0.40 +
-                _ballFlightEstimateSec() * 0.55 +
-                (rng.nextDouble() - 0.5) * swingWindow * 0.5) *
+    final flight = _ballFlightEstimateSec();
+    final reactionMs = ((flight -
+                swingWindow * 0.40 +
+                (rng.nextDouble() - 0.5) * swingWindow * 1.2) *
             1000)
-        .clamp(220.0, 2400.0);
+        .clamp(80.0, 2400.0);
     Future.delayed(Duration(milliseconds: reactionMs.toInt()), () {
       if (phase != GamePhase.playing) return;
       if (innings != Innings.aiBats) return;
@@ -1009,6 +1036,7 @@ class CricketGame extends FlameGame
   void _saveProgress() {
     if (innings == Innings.complete) return;
     final fi = firstInningsScore;
+    final ps = _playerStats;
     SaveService.instance.save(SavedMatch(
       format: settings.format,
       difficulty: settings.difficulty,
@@ -1023,6 +1051,10 @@ class CricketGame extends FlameGame
       firstInningsWickets: fi?.wickets,
       firstInningsOversCompleted: fi?.oversCompleted,
       firstInningsCurrentBallInOver: fi?.currentBallInOver,
+      // Player's batting fours/sixes — needed to log accurate career stats
+      // if the player resumes mid-AI-chase and finishes the match.
+      firstInningsFours: ps?.fours,
+      firstInningsSixes: ps?.sixes,
       target: target,
     ));
   }
@@ -1053,7 +1085,20 @@ class CricketGame extends FlameGame
       stateNotifier.setFirstInningsScore(firstInningsScore);
     }
     target = saved.target;
-    _playerStats = null;
+    // Reconstruct the player's batting snapshot for mid-AI-chase resumes;
+    // `_finalizeMatch` reads this to log career stats. Single-innings or
+    // pre-transition saves leave this null and stats fall back to the live
+    // ScoreManager (correct in those cases).
+    if (innings == Innings.aiBats && saved.firstInningsRuns != null) {
+      _playerStats = _PlayerInningsStats(
+        runs: saved.firstInningsRuns!,
+        wickets: saved.firstInningsWickets ?? 0,
+        fours: saved.firstInningsFours ?? 0,
+        sixes: saved.firstInningsSixes ?? 0,
+      );
+    } else {
+      _playerStats = null;
+    }
     _runsThisBall = 0;
     _setRunning(false);
     _inputEnabled = false;
@@ -1180,10 +1225,19 @@ class CricketGame extends FlameGame
     // Capture for strike-rotation logic before resetting the per-ball outcome.
     final wasOddRuns = _outcomeRuns.isOdd;
     final wasWicket = _outcomeWicket;
+    final wasSix = _outcomeRuns == kBoundarySixRuns;
 
     _outcomeRuns = 0;
     _outcomeWicket = false;
     _currentBowl = null;
+
+    // ── DRS / replay ─────────────────────────────────────────────────────
+    // Memorable outcomes get a slow-mo replay between this delivery and the
+    // next. Skipped on chase-end / innings-end (the GameOver overlay takes
+    // over instead) and when too few frames were captured.
+    if ((wasWicket || wasSix) && _replayFrames.length >= 6) {
+      _startReplay(wasWicket ? 'WICKET REPLAY' : 'SIX REPLAY');
+    }
 
     final overCompleted = scoreManager.nextBall();
     _broadcastScore();
@@ -1240,8 +1294,12 @@ class CricketGame extends FlameGame
     _saveProgress();
 
     _pendingDeliveryScheduled = true;
+    // Replay extends the gap so the next ball doesn't bowl over it.
+    final settleDelay = _replayActive
+        ? kReplayDurationSec + 0.3
+        : kSettlingDelaySec;
     Future.delayed(
-      Duration(milliseconds: (kSettlingDelaySec * 1000).round()),
+      Duration(milliseconds: (settleDelay * 1000).round()),
       () {
         if (phase == GamePhase.playing) {
           ball.reset();
@@ -1252,6 +1310,19 @@ class CricketGame extends FlameGame
         _pendingDeliveryScheduled = false;
       },
     );
+  }
+
+  /// Spawn a `ReplayOverlay` for a memorable outcome. Sets `_replayActive`
+  /// so `_finishDelivery` stretches its settling delay; clears the flag
+  /// when the overlay reports done.
+  void _startReplay(String label) {
+    _replayActive = true;
+    add(ReplayOverlay(
+      frames: List.of(_replayFrames),
+      times: List.of(_replayTimes),
+      label: label,
+      onDone: () => _replayActive = false,
+    ));
   }
 
   // ── Tap / swipe input ──────────────────────────────────────────────────────
